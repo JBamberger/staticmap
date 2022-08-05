@@ -7,7 +7,7 @@ from typing import Tuple, Callable, Union
 
 from PIL import Image, ImageDraw
 from PIL.Image import Resampling
-from requests import RequestException
+from requests import RequestException, Session
 from requests_cache import CachedSession
 
 
@@ -242,7 +242,8 @@ class StaticMap:
                  background_color="#fff",
                  delay_between_retries=0,
                  concurrent_connections=2,
-                 max_retries=3):
+                 max_retries=3,
+                 cache_file='tile_cache'):
         """
         :param width: map width in pixel
         :type width: int
@@ -292,6 +293,7 @@ class StaticMap:
         self.concurrent_connections = concurrent_connections
         self.delay_between_retries = delay_between_retries
         self.max_retries = max_retries
+        self.cache_file = cache_file
 
     def add_shape(self, shape: Union[AntialiasShape, DirectShape]):
         self.shapes.append(shape)
@@ -440,7 +442,12 @@ class StaticMap:
         tiles = [(x, y, self._get_tile_url(x, y))
                  for x in range(x_min, x_max) for y in range(y_min, y_max)]
 
-        with CachedSession(cache_name='tile_cache', cache_control=True) as session:
+        if self.cache_file is None:
+            session = Session()
+        else:
+            session = CachedSession(cache_name=self.cache_file, cache_control=True)
+
+        with session:
             def download_tile(url):
                 res = session.get(url, timeout=self.request_timeout, headers=self.headers)
                 return res.status_code, res.content

@@ -1,4 +1,5 @@
 import os.path
+import time
 
 from staticmap import *
 
@@ -52,9 +53,57 @@ def draw_polygon():
     m.render().save('polygon.png')
 
 
+def draw_uncached():
+    m = StaticMap(1024, 1024, padding_x=80, cache_file=None)
+
+    m.add_shape(Polygon(
+        [
+            [12.422, 45.427],
+            [13.749, 45.427],
+            [13.749, 44.885],
+            [12.422, 44.885],
+        ],
+        outline_color='#00ff00',
+        fill_color='#00ff00',
+        simplify=True,
+    ))
+    m.render().save('polygon.png')
+
+
+def test_caching():
+    cache_file = 'tmp_cache'
+    cache_file_name = cache_file + '.sqlite'
+
+    if os.path.exists(cache_file_name):
+        os.remove(cache_file_name)
+
+    for i in range(10):
+        start = time.time()
+        m = StaticMap(1024, 1024, padding_x=80, cache_file=cache_file)
+
+        m.add_shape(Polygon(
+            [
+                [12.422, 45.427],
+                [13.749, 45.427],
+                [13.749, 44.885],
+                [12.422, 44.885],
+            ],
+            outline_color='#00ff00',
+            fill_color='#00ff00',
+            simplify=True,
+        ))
+        m.render()
+
+        print(time.time() - start)
+
+    os.remove(cache_file_name)
+
+
 if __name__ == '__main__':
     show_pos()
     show_line()
     show_icon_marker()
-
     draw_polygon()
+    draw_uncached()
+
+    test_caching()
