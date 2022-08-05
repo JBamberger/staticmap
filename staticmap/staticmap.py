@@ -179,8 +179,20 @@ def _simplify(points, tolerance=11):
 
 
 class StaticMap:
-    def __init__(self, width, height, padding_x=0, padding_y=0, url_template="http://a.tile.komoot.de/komoot-2/{z}/{x}/{y}.png", tile_size=256, tile_request_timeout=None, headers=None, reverse_y=False, background_color="#fff",
-                 delay_between_retries=0):
+    def __init__(self,
+                 width,
+                 height,
+                 padding_x=0,
+                 padding_y=0,
+                 url_template="http://a.tile.komoot.de/komoot-2/{z}/{x}/{y}.png",
+                 tile_size=256,
+                 tile_request_timeout=None,
+                 headers=None,
+                 reverse_y=False,
+                 background_color="#fff",
+                 delay_between_retries=0,
+                 concurrent_connections=2,
+                 max_retries=3):
         """
         :param width: map width in pixel
         :type width: int
@@ -204,6 +216,10 @@ class StaticMap:
         :type background_color: str
         :param delay_between_retries: number of seconds to wait between retries of map tile requests
         :type delay_between_retries: int
+        :param concurrent_connections: Number of concurrent connections to use for tile downloads.
+        :type concurrent_connections: int
+        :param max_retries: Max numbers of retries per tile
+        :type max_retries: int
         """
         self.width = width
         self.height = height
@@ -225,7 +241,9 @@ class StaticMap:
         self.y_center = 0
         self.zoom = 0
 
+        self.concurrent_connections = concurrent_connections
         self.delay_between_retries = delay_between_retries
+        self.max_retries = max_retries
 
     def add_line(self, line):
         """
@@ -396,7 +414,7 @@ class StaticMap:
                 url = self.url_template.format(z=self.zoom, x=tile_x, y=tile_y)
                 tiles.append((x, y, url))
 
-        thread_pool = ThreadPoolExecutor(4)
+        thread_pool = ThreadPoolExecutor(self.concurrent_connections)
 
         for nb_retry in itertools.count():
             if not tiles:
@@ -404,18 +422,17 @@ class StaticMap:
                 break
 
             if nb_retry > 0 and self.delay_between_retries:
-                # to avoid stressing the map tile server to much, wait some seconds
+                # to avoid stressing the map tile server too much, wait some seconds
                 time.sleep(self.delay_between_retries)
 
-            if nb_retry >= 3:
+            if nb_retry >= self.max_retries:
                 # maximum number of retries exceeded
                 raise RuntimeError("could not download {} tiles: {}".format(len(tiles), tiles))
 
             failed_tiles = []
-            futures = [
-                thread_pool.submit(self.get, tile[2], timeout=self.request_timeout, headers=self.headers)
-                for tile in tiles
-            ]
+            futures = [thread_pool.submit(
+                self.get, tile[2], timeout=self.request_timeout, headers=self.headers)
+                for tile in tiles]
 
             for tile, future in zip(tiles, futures):
                 x, y, url = tile
