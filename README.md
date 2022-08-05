@@ -4,6 +4,8 @@ A small, python-based library for creating map images with lines and markers.
 
 ## Example
 ```python
+from staticmap import *
+
 m = StaticMap(300, 400, 10)
 m.add_line(Line(((13.4, 52.5), (2.3, 48.9)), 'blue', 3))
 image = m.render()
