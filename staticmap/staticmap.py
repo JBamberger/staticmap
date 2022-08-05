@@ -1,7 +1,9 @@
 import time
+from abc import ABC
 from concurrent.futures import ThreadPoolExecutor, CancelledError
 from io import BytesIO
 from math import sqrt, log, tan, pi, cos, ceil, floor, atan, sinh
+from typing import Tuple, Callable, Union
 
 from PIL import Image, ImageDraw
 from PIL.Image import Resampling
@@ -9,7 +11,17 @@ from requests import RequestException
 from requests_cache import CachedSession
 
 
-class Line:
+class AntialiasShape(ABC):
+    def draw(self, canvas: ImageDraw, coord_to_pix: Callable[[float, float], Tuple[float, float]]):
+        raise NotImplementedError()
+
+
+class DirectShape(ABC):
+    def draw(self, canvas: Image, coord_to_pix: Callable[[float, float], Tuple[float, float]]):
+        raise NotImplementedError()
+
+
+class Line(AntialiasShape):
     def __init__(self, coords, color, width, simplify=True):
         """
         Line that can be drawn in a static map
@@ -42,8 +54,23 @@ class Line:
             max((c[1] for c in self.coords)),
         )
 
+    def draw(self, canvas: ImageDraw, coord_to_pix: Callable[[float, float], Tuple[float, float]]):
+        points = [coord_to_pix(*coords) for coords in self.coords]
 
-class CircleMarker:
+        if self.simplify:
+            points = _simplify(points)
+
+        for point in points:
+            # draw extra points to make the connection between lines look nice
+            canvas.ellipse((
+                point[0] - self.width + 1, point[1] - self.width + 1,
+                point[0] + self.width - 1, point[1] + self.width - 1
+            ), fill=self.color)
+
+        canvas.line(points, fill=self.color, width=self.width * 2)
+
+
+class CircleMarker(AntialiasShape):
     def __init__(self, coord, color, width):
         """
         :param coord: a lon-lat pair, eg (175.0, 0.0)
@@ -61,8 +88,15 @@ class CircleMarker:
     def extent_px(self):
         return (self.width,) * 4
 
+    def draw(self, canvas: ImageDraw, coord_to_pix: Callable[[float, float], Tuple[float, float]]):
+        point = coord_to_pix(*self.coord)
+        canvas.ellipse((
+            point[0] - self.width, point[1] - self.width,
+            point[0] + self.width, point[1] + self.width
+        ), fill=self.color)
 
-class IconMarker:
+
+class IconMarker(DirectShape):
     def __init__(self, coord, file_path, offset_x, offset_y):
         """
         :param coord:  a lon-lat pair, eg (175.0, 0.0)
@@ -88,8 +122,14 @@ class IconMarker:
             self.offset[1],
         )
 
+    def draw(self, canvas: Image, coord_to_pix: Callable[[float, float], Tuple[float, float]]):
+        x, y = coord_to_pix(*self.coord)
+        position = (x - self.offset[0], y - self.offset[1])
 
-class Polygon:
+        canvas.paste(self.img, position, self.img)
+
+
+class Polygon(AntialiasShape):
     """
     Polygon that can be drawn on map
 
@@ -117,6 +157,15 @@ class Polygon:
             max((c[0] for c in self.coords)),
             max((c[1] for c in self.coords)),
         )
+
+    def draw(self, canvas: ImageDraw, coord_to_pix: Callable[[float, float], Tuple[float, float]]):
+        points = [coord_to_pix(*coord) for coord in self.coords]
+
+        if self.simplify:
+            points = _simplify(points)
+
+        if self.fill_color or self.outline_color:
+            canvas.polygon(points, fill=self.fill_color, outline=self.outline_color)
 
 
 def _lon_to_x(lon, zoom):
@@ -233,9 +282,7 @@ class StaticMap:
         self.background_color = background_color
 
         # features
-        self.markers = []
-        self.lines = []
-        self.polygons = []
+        self.shapes = []
 
         # fields that get set when map is rendered
         self.x_center = 0
@@ -246,26 +293,17 @@ class StaticMap:
         self.delay_between_retries = delay_between_retries
         self.max_retries = max_retries
 
-    def add_line(self, line):
-        """
-        :param line: line to draw
-        :type line: Line
-        """
-        self.lines.append(line)
+    def add_shape(self, shape: Union[AntialiasShape, DirectShape]):
+        self.shapes.append(shape)
 
-    def add_marker(self, marker):
-        """
-        :param marker: marker to draw
-        :type marker: IconMarker or CircleMarker
-        """
-        self.markers.append(marker)
+    def add_line(self, line: Line):
+        self.add_shape(line)
 
-    def add_polygon(self, polygon):
-        """
-        :param polygon: polygon to be drawn
-        :type polygon: Polygon
-        """
-        self.polygons.append(polygon)
+    def add_marker(self, marker: Union[IconMarker, CircleMarker]):
+        self.add_shape(marker)
+
+    def add_polygon(self, polygon: Polygon):
+        self.add_shape(polygon)
 
     def render(self, zoom=None, center=None):
         """
@@ -279,7 +317,7 @@ class StaticMap:
         :rtype: Image.Image
         """
 
-        if not self.lines and not self.markers and not self.polygons and not (center and zoom):
+        if not self.shapes and not (center and zoom):
             raise RuntimeError("cannot render empty map, add lines / markers / polygons first")
 
         if zoom is None:
@@ -315,29 +353,29 @@ class StaticMap:
         :return: extent (min_lon, min_lat, max_lon, max_lat)
         :rtype: tuple
         """
-        extents = [l.extent for l in self.lines]
+        extents = []
+        for shape in self.shapes:
+            try:
+                extents.append(shape.extent)
+            except AttributeError:
+                e = (shape.coord[0], shape.coord[1])
 
-        for m in self.markers:
-            e = (m.coord[0], m.coord[1])
+                if zoom is None:
+                    extents.append(e * 2)
+                    continue
 
-            if zoom is None:
-                extents.append(e * 2)
-                continue
+                # consider dimension of marker
+                e_px = shape.extent_px
 
-            # consider dimension of marker
-            e_px = m.extent_px
+                x = _lon_to_x(e[0], zoom)
+                y = _lat_to_y(e[1], zoom)
 
-            x = _lon_to_x(e[0], zoom)
-            y = _lat_to_y(e[1], zoom)
-
-            extents += [(
-                _x_to_lon(x - float(e_px[0]) / self.tile_size, zoom),
-                _y_to_lat(y + float(e_px[1]) / self.tile_size, zoom),
-                _x_to_lon(x + float(e_px[2]) / self.tile_size, zoom),
-                _y_to_lat(y - float(e_px[3]) / self.tile_size, zoom)
-            )]
-
-        extents += [p.extent for p in self.polygons]
+                extents += [(
+                    _x_to_lon(x - float(e_px[0]) / self.tile_size, zoom),
+                    _y_to_lat(y + float(e_px[1]) / self.tile_size, zoom),
+                    _x_to_lon(x + float(e_px[2]) / self.tile_size, zoom),
+                    _y_to_lat(y - float(e_px[3]) / self.tile_size, zoom)
+                )]
 
         return (
             min(e[0] for e in extents),
@@ -373,23 +411,13 @@ class StaticMap:
         # map dimension is too small to fit all features
         return 0
 
-    def _x_to_px(self, x):
-        """
-        transform tile number to pixel on image canvas
-        :type x: float
-        :rtype: float
-        """
-        px = (x - self.x_center) * self.tile_size + self.width / 2
-        return int(round(px))
+    def geo_to_tile(self, coords):
+        return _lon_to_x(coords[0], self.zoom), _lat_to_y(coords[1], self.zoom)
 
-    def _y_to_px(self, y):
-        """
-        transform tile number to pixel on image canvas
-        :type y: float
-        :rtype: float
-        """
-        px = (y - self.y_center) * self.tile_size + self.height / 2
-        return int(round(px))
+    def tile_to_img(self, coords):
+        px = (coords[0] - self.x_center) * self.tile_size + self.width / 2
+        py = (coords[1] - self.y_center) * self.tile_size + self.height / 2
+        return int(round(px)), int(round(py))
 
     def _get_tile_url(self, x, y) -> str:
         # x and y may have crossed the date line
@@ -445,8 +473,8 @@ class StaticMap:
                         continue
 
                     tile_image = Image.open(BytesIO(response_content)).convert("RGBA")
-                    box = [self._x_to_px(x), self._y_to_px(y),
-                           self._x_to_px(x + 1), self._y_to_px(y + 1)]
+                    box = [*self.tile_to_img((x, y)),
+                           *self.tile_to_img((x + 1, y + 1))]
                     image.paste(tile_image, box, tile_image)
 
                 # put failed back into list of tiles to fetch in next try
@@ -455,72 +483,31 @@ class StaticMap:
         if tiles:
             raise RuntimeError("could not download {} tiles: {}".format(len(tiles), tiles))
 
-    def _draw_features(self, image):
-        """
-        :type image: Image.Image
-        """
+    def _draw_features(self, canvas: Image.Image):
+
         # Pillow does not support anti aliasing for lines and circles
-        # There is a trick to draw them on an image that is twice the size and resize it at the end before it gets merged with  the base layer
+        # There is a trick to draw them on an image that is twice the size and resize it at the end
+        # before it gets merged with  the base layer
 
-        image_lines = Image.new('RGBA', (self.width * 2, self.height * 2), (255, 0, 0, 0))
-        draw = ImageDraw.Draw(image_lines)
+        def coord_to_px(lon, lat) -> Tuple[float, float]:
+            return self.tile_to_img(self.geo_to_tile((lon, lat)))
 
-        for line in self.lines:
-            points = [(
-                self._x_to_px(_lon_to_x(coord[0], self.zoom)) * 2,
-                self._y_to_px(_lat_to_y(coord[1], self.zoom)) * 2,
-            ) for coord in line.coords]
+        def aa_coord_to_px(lon, lat) -> Tuple[float, float]:
+            x, y = coord_to_px(lon, lat)
+            return x * 2, y * 2
 
-            if line.simplify:
-                points = _simplify(points)
+        aa_image = Image.new('RGBA', (self.width * 2, self.height * 2), (255, 0, 0, 0))
+        aa_canvas = ImageDraw.Draw(aa_image)
 
-            for point in points:
-                # draw extra points to make the connection between lines look nice
-                draw.ellipse((
-                    point[0] - line.width + 1,
-                    point[1] - line.width + 1,
-                    point[0] + line.width - 1,
-                    point[1] + line.width - 1
-                ), fill=line.color)
+        for shape in filter(lambda s: isinstance(s, AntialiasShape), self.shapes):
+            shape.draw(aa_canvas, aa_coord_to_px)
 
-            draw.line(points, fill=line.color, width=line.width * 2)
-
-        for circle in filter(lambda m: isinstance(m, CircleMarker), self.markers):
-            point = [
-                self._x_to_px(_lon_to_x(circle.coord[0], self.zoom)) * 2,
-                self._y_to_px(_lat_to_y(circle.coord[1], self.zoom)) * 2
-            ]
-            draw.ellipse((
-                point[0] - circle.width,
-                point[1] - circle.width,
-                point[0] + circle.width,
-                point[1] + circle.width
-            ), fill=circle.color)
-
-        for polygon in self.polygons:
-            points = [(
-                self._x_to_px(_lon_to_x(coord[0], self.zoom)) * 2,
-                self._y_to_px(_lat_to_y(coord[1], self.zoom)) * 2,
-
-            ) for coord in polygon.coords]
-            if polygon.simplify:
-                points = _simplify(points)
-
-            if polygon.fill_color or polygon.outline_color:
-                draw.polygon(points, fill=polygon.fill_color, outline=polygon.outline_color)
-
-        image_lines = image_lines.resize((self.width, self.height), Resampling.LANCZOS)
-
+        aa_image = aa_image.resize((self.width, self.height), Resampling.LANCZOS)
         # merge lines with base image
-        image.paste(image_lines, (0, 0), image_lines)
+        canvas.paste(aa_image, (0, 0), aa_image)
 
-        # add icon marker
-        for icon in filter(lambda m: isinstance(m, IconMarker), self.markers):
-            position = (
-                self._x_to_px(_lon_to_x(icon.coord[0], self.zoom)) - icon.offset[0],
-                self._y_to_px(_lat_to_y(icon.coord[1], self.zoom)) - icon.offset[1]
-            )
-            image.paste(icon.img, position, icon.img)
+        for shape in filter(lambda s: isinstance(s, DirectShape), self.shapes):
+            shape.draw(canvas, coord_to_px)
 
 
 if __name__ == '__main__':
