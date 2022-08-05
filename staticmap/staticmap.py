@@ -1,11 +1,12 @@
-import itertools
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, CancelledError
 from io import BytesIO
 from math import sqrt, log, tan, pi, cos, ceil, floor, atan, sinh
 
-import requests
 from PIL import Image, ImageDraw
+from PIL.Image import Resampling
+from requests import RequestException
+from requests_cache import CachedSession
 
 
 class Line:
@@ -390,81 +391,69 @@ class StaticMap:
         px = (y - self.y_center) * self.tile_size + self.height / 2
         return int(round(px))
 
-    def _draw_base_layer(self, image):
-        """
-        :type image: Image.Image
-        """
+    def _get_tile_url(self, x, y) -> str:
+        # x and y may have crossed the date line
+        max_tile = 2 ** self.zoom
+        tile_x = (x + max_tile) % max_tile
+        tile_y = (y + max_tile) % max_tile
+
+        if self.reverse_y:
+            tile_y = ((1 << self.zoom) - tile_y) - 1
+
+        return self.url_template.format(z=self.zoom, x=tile_x, y=tile_y)
+
+    def _draw_base_layer(self, image: Image):
         x_min = int(floor(self.x_center - (0.5 * self.width / self.tile_size)))
         y_min = int(floor(self.y_center - (0.5 * self.height / self.tile_size)))
         x_max = int(ceil(self.x_center + (0.5 * self.width / self.tile_size)))
         y_max = int(ceil(self.y_center + (0.5 * self.height / self.tile_size)))
 
         # assemble all map tiles needed for the map
-        tiles = []
-        for x in range(x_min, x_max):
-            for y in range(y_min, y_max):
-                # x and y may have crossed the date line
-                max_tile = 2 ** self.zoom
-                tile_x = (x + max_tile) % max_tile
-                tile_y = (y + max_tile) % max_tile
+        tiles = [(x, y, self._get_tile_url(x, y))
+                 for x in range(x_min, x_max) for y in range(y_min, y_max)]
 
-                if self.reverse_y:
-                    tile_y = ((1 << self.zoom) - tile_y) - 1
+        with CachedSession(cache_name='tile_cache', cache_control=True) as session:
+            def download_tile(url):
+                res = session.get(url, timeout=self.request_timeout, headers=self.headers)
+                return res.status_code, res.content
 
-                url = self.url_template.format(z=self.zoom, x=tile_x, y=tile_y)
-                tiles.append((x, y, url))
+            thread_pool = ThreadPoolExecutor(self.concurrent_connections)
 
-        thread_pool = ThreadPoolExecutor(self.concurrent_connections)
+            for nb_retry in range(self.max_retries):
+                if not tiles:
+                    break
+                if nb_retry > 0 and self.delay_between_retries:
+                    # to avoid stressing the map tile server too much, wait some seconds
+                    time.sleep(self.delay_between_retries)
 
-        for nb_retry in itertools.count():
-            if not tiles:
-                # no tiles left
-                break
+                failed_tiles = []
+                futures = [thread_pool.submit(download_tile, tile[2]) for tile in tiles]
+                for tile, future in zip(tiles, futures):
+                    x, y, url = tile
 
-            if nb_retry > 0 and self.delay_between_retries:
-                # to avoid stressing the map tile server too much, wait some seconds
-                time.sleep(self.delay_between_retries)
+                    try:
+                        status_code, response_content = future.result()
+                    except CancelledError:
+                        print('Cancelled download externally.')
+                        break
+                    except RequestException:
+                        status_code, response_content = None, None
 
-            if nb_retry >= self.max_retries:
-                # maximum number of retries exceeded
-                raise RuntimeError("could not download {} tiles: {}".format(len(tiles), tiles))
+                    if status_code != 200:
+                        print("request failed [{}]: {}".format(status_code, url))
+                        failed_tiles.append(tile)
+                        continue
 
-            failed_tiles = []
-            futures = [thread_pool.submit(
-                self.get, tile[2], timeout=self.request_timeout, headers=self.headers)
-                for tile in tiles]
+                    tile_image = Image.open(BytesIO(response_content)).convert("RGBA")
+                    box = [self._x_to_px(x), self._y_to_px(y),
+                           self._x_to_px(x + 1), self._y_to_px(y + 1)]
+                    image.paste(tile_image, box, tile_image)
 
-            for tile, future in zip(tiles, futures):
-                x, y, url = tile
+                # put failed back into list of tiles to fetch in next try
+                tiles = failed_tiles
 
-                try:
-                    response_status_code, response_content = future.result()
-                except:
-                    response_status_code, response_content = None, None
-
-                if response_status_code != 200:
-                    print("request failed [{}]: {}".format(response_status_code, url))
-                    failed_tiles.append(tile)
-                    continue
-
-                tile_image = Image.open(BytesIO(response_content)).convert("RGBA")
-                box = [
-                    self._x_to_px(x),
-                    self._y_to_px(y),
-                    self._x_to_px(x + 1),
-                    self._y_to_px(y + 1),
-                ]
-                image.paste(tile_image, box, tile_image)
-
-            # put failed back into list of tiles to fetch in next try
-            tiles = failed_tiles
-
-    def get(self, url, **kwargs):
-        """
-        returns the status code and content (in bytes) of the requested tile url
-        """
-        res = requests.get(url, **kwargs)
-        return res.status_code, res.content
+        if tiles:
+            raise RuntimeError("could not download {} tiles: {}".format(len(tiles), tiles))
 
     def _draw_features(self, image):
         """
@@ -520,7 +509,7 @@ class StaticMap:
             if polygon.fill_color or polygon.outline_color:
                 draw.polygon(points, fill=polygon.fill_color, outline=polygon.outline_color)
 
-        image_lines = image_lines.resize((self.width, self.height), Image.ANTIALIAS)
+        image_lines = image_lines.resize((self.width, self.height), Resampling.LANCZOS)
 
         # merge lines with base image
         image.paste(image_lines, (0, 0), image_lines)

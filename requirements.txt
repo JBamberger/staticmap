@@ -1,3 +1,4 @@
 requests
+requests-cache
 Pillow
 futures;python_version<"3.2"
