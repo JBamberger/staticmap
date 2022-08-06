@@ -47,7 +47,7 @@ def draw_polygon():
             [12.422, 44.885],
         ],
         outline_color='#00ff00',
-        fill_color='#00ff00',
+        fill_color='#0000ff',
         simplify=True,
     ))
     m.render().save('polygon.png')
@@ -99,11 +99,29 @@ def test_caching():
     os.remove(cache_file_name)
 
 
+def draw_polygon_osm():
+    m = StaticMap.with_osm_preset(1024, 1024, user_agent='StaticMapExample/v0.1', padding_x=80)
+
+    m.add_shape(Polygon(
+        [
+            [12.422, 45.427],
+            [13.749, 45.427],
+            [13.749, 44.885],
+            [12.422, 44.885],
+        ],
+        outline_color='#00ff00',
+        fill_color='#0000ff',
+        simplify=True,
+    ))
+    m.render().save('polygon_osm.png')
+
+
 if __name__ == '__main__':
     show_pos()
     show_line()
     show_icon_marker()
     draw_polygon()
-    draw_uncached()
+    draw_polygon_osm()
 
-    test_caching()
+    # draw_uncached()
+    # test_caching()

@@ -1,3 +1,4 @@
+from __future__ import annotations
 import time
 from abc import ABC
 from concurrent.futures import ThreadPoolExecutor, CancelledError
@@ -282,6 +283,55 @@ class StaticMap:
         self.x_center = 0
         self.y_center = 0
         self.zoom = 0
+
+    @staticmethod
+    def with_osm_preset(
+            width: int, height: int,
+            user_agent: str,
+            cache_file: str = 'tile_cache',
+            **kwargs) -> StaticMap:
+        """
+        Creates a `StaticMap` instance with the OpenStreetMap tile server configured. The defaults
+        are set to comply with the `Tile Usage Policy`_ of OSM.
+
+        Specifically, this configures:
+
+        - Tile caching
+        - The app user agent
+        - A concurrent connection limit of 2
+        - The OSM tile url pattern
+
+        .. warning::
+        Before use, ensure that your usage pattern is allowed. For example, this entails displaying
+        a licence attribution and avoiding excessive/heavy use of the api. More details can be
+        found in the `Tile Usage Policy`_.
+
+        .. _Tile Usage Policy: https://operations.osmfoundation.org/policies/tiles/
+
+        :param width: Width of the map
+        :param height: Height of the map
+        :param user_agent: User agent string that uniquely identifies the application.
+        :param cache_file: File name or path where tiles should be cached.
+        :param kwargs: Other arguments to pass to the constructor of StaticMap
+        :return: StaticMap
+        """
+        assert cache_file is not None, "Cache file cannot be None."
+        assert user_agent is not None, "User agent cannot be None."
+
+        kwargs['cache_file'] = cache_file
+
+        if 'url_template' not in kwargs:
+            kwargs['url_template'] = 'https://a.tile.openstreetmap.org/{z}/{x}/{y}.png'
+
+        if 'concurrent_connections' not in kwargs:
+            kwargs['concurrent_connections'] = 2
+
+        headers = kwargs.get('headers', dict())
+        if 'User-Agent' not in headers:
+            headers['User-Agent'] = user_agent
+        kwargs['headers'] = headers
+
+        return StaticMap(width, height, **kwargs)
 
     def add_shape(self, shape: Union[AntialiasShape, DirectShape]):
         self.shapes.append(shape)
