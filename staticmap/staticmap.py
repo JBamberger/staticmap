@@ -3,21 +3,25 @@ from abc import ABC
 from concurrent.futures import ThreadPoolExecutor, CancelledError
 from io import BytesIO
 from math import sqrt, log, tan, pi, cos, ceil, floor, atan, sinh
-from typing import Tuple, Callable, Union
+from typing import Tuple, Callable, Union, Optional, Dict, List
 
 from PIL import Image, ImageDraw
 from PIL.Image import Resampling
 from requests import RequestException, Session
 from requests_cache import CachedSession
 
+LonLat = Tuple[float, float]
+TileCoord = Tuple[float, float]
+PixCoord = Tuple[float, float]
+
 
 class AntialiasShape(ABC):
-    def draw(self, canvas: ImageDraw, coord_to_pix: Callable[[float, float], Tuple[float, float]]):
+    def draw(self, canvas: ImageDraw, coord_to_pix: Callable[[LonLat], PixCoord]):
         raise NotImplementedError()
 
 
 class DirectShape(ABC):
-    def draw(self, canvas: Image, coord_to_pix: Callable[[float, float], Tuple[float, float]]):
+    def draw(self, canvas: Image, coord_to_pix: Callable[[LonLat], PixCoord]):
         raise NotImplementedError()
 
 
@@ -54,8 +58,8 @@ class Line(AntialiasShape):
             max((c[1] for c in self.coords)),
         )
 
-    def draw(self, canvas: ImageDraw, coord_to_pix: Callable[[float, float], Tuple[float, float]]):
-        points = [coord_to_pix(*coords) for coords in self.coords]
+    def draw(self, canvas: ImageDraw, coord_to_pix: Callable[[LonLat], PixCoord]):
+        points = [coord_to_pix(coords) for coords in self.coords]
 
         if self.simplify:
             points = _simplify(points)
@@ -88,8 +92,8 @@ class CircleMarker(AntialiasShape):
     def extent_px(self):
         return (self.width,) * 4
 
-    def draw(self, canvas: ImageDraw, coord_to_pix: Callable[[float, float], Tuple[float, float]]):
-        point = coord_to_pix(*self.coord)
+    def draw(self, canvas: ImageDraw, coord_to_pix: Callable[[LonLat], PixCoord]):
+        point = coord_to_pix(self.coord)
         canvas.ellipse((
             point[0] - self.width, point[1] - self.width,
             point[0] + self.width, point[1] + self.width
@@ -122,8 +126,8 @@ class IconMarker(DirectShape):
             self.offset[1],
         )
 
-    def draw(self, canvas: Image, coord_to_pix: Callable[[float, float], Tuple[float, float]]):
-        x, y = coord_to_pix(*self.coord)
+    def draw(self, canvas: Image, coord_to_pix: Callable[[LonLat], PixCoord]):
+        x, y = coord_to_pix(self.coord)
         position = (x - self.offset[0], y - self.offset[1])
 
         canvas.paste(self.img, position, self.img)
@@ -158,8 +162,8 @@ class Polygon(AntialiasShape):
             max((c[1] for c in self.coords)),
         )
 
-    def draw(self, canvas: ImageDraw, coord_to_pix: Callable[[float, float], Tuple[float, float]]):
-        points = [coord_to_pix(*coord) for coord in self.coords]
+    def draw(self, canvas: ImageDraw, coord_to_pix: Callable[[LonLat], PixCoord]):
+        points = [coord_to_pix(coord) for coord in self.coords]
 
         if self.simplify:
             points = _simplify(points)
@@ -202,14 +206,11 @@ def _x_to_lon(x, zoom):
     return x / pow(2, zoom) * 360.0 - 180.0
 
 
-def _simplify(points, tolerance=11):
+def _simplify(points: List[LonLat], tolerance: float = 11) -> List[LonLat]:
     """
     :param points: list of lon-lat pairs
-    :type points: list
     :param tolerance: tolerance in pixel
-    :type tolerance: float
     :return: list of lon-lat pairs
-    :rtype: list
     """
     if not points:
         return points
@@ -230,47 +231,34 @@ def _simplify(points, tolerance=11):
 
 class StaticMap:
     def __init__(self,
-                 width,
-                 height,
-                 padding_x=0,
-                 padding_y=0,
-                 url_template="http://a.tile.komoot.de/komoot-2/{z}/{x}/{y}.png",
-                 tile_size=256,
-                 tile_request_timeout=None,
-                 headers=None,
-                 reverse_y=False,
-                 background_color="#fff",
-                 delay_between_retries=0,
-                 concurrent_connections=2,
-                 max_retries=3,
-                 cache_file='tile_cache'):
+                 width: int,
+                 height: int,
+                 padding_x: int = 0,
+                 padding_y: int = 0,
+                 url_template: str = "http://a.tile.komoot.de/komoot-2/{z}/{x}/{y}.png",
+                 tile_size: int = 256,
+                 tile_request_timeout: Optional[float] = None,
+                 headers: Optional[Dict[str, str]] = None,
+                 reverse_y: bool = False,
+                 background_color: str = "#fff",
+                 delay_between_retries: int = 0,
+                 concurrent_connections: int = 2,
+                 max_retries: int = 3,
+                 cache_file: Optional[str] = 'tile_cache'):
         """
         :param width: map width in pixel
-        :type width: int
         :param height:  map height in pixel
-        :type height: int
         :param padding_x: min distance in pixel from map features to border of map
-        :type padding_x: int
         :param padding_y: min distance in pixel from map features to border of map
-        :type padding_y: int
         :param url_template: tile URL
-        :type url_template: str
         :param tile_size: the size of the map tiles in pixel
-        :type tile_size: int
         :param tile_request_timeout: time in seconds to wait for requesting map tiles
-        :type tile_request_timeout: float
         :param headers: additional headers to add to http requests
-        :type headers: dict
         :param reverse_y: tile source has TMS y origin
-        :type reverse_y: bool
         :param background_color: Image background color, only visible when tiles are transparent
-        :type background_color: str
         :param delay_between_retries: number of seconds to wait between retries of map tile requests
-        :type delay_between_retries: int
         :param concurrent_connections: Number of concurrent connections to use for tile downloads.
-        :type concurrent_connections: int
         :param max_retries: Max numbers of retries per tile
-        :type max_retries: int
         """
         self.width = width
         self.height = height
@@ -282,18 +270,18 @@ class StaticMap:
         self.reverse_y = reverse_y
         self.background_color = background_color
 
-        # features
+        self.concurrent_connections = concurrent_connections
+        self.delay_between_retries = delay_between_retries
+        self.max_retries = max_retries
+        self.cache_file = cache_file
+
+        # Added map geometries and features
         self.shapes = []
 
         # fields that get set when map is rendered
         self.x_center = 0
         self.y_center = 0
         self.zoom = 0
-
-        self.concurrent_connections = concurrent_connections
-        self.delay_between_retries = delay_between_retries
-        self.max_retries = max_retries
-        self.cache_file = cache_file
 
     def add_shape(self, shape: Union[AntialiasShape, DirectShape]):
         self.shapes.append(shape)
@@ -413,19 +401,19 @@ class StaticMap:
         # map dimension is too small to fit all features
         return 0
 
-    def geo_to_tile(self, coords):
+    def _geo_to_tile(self, coords: LonLat) -> TileCoord:
         return _lon_to_x(coords[0], self.zoom), _lat_to_y(coords[1], self.zoom)
 
-    def tile_to_img(self, coords):
+    def _tile_to_img(self, coords: TileCoord) -> PixCoord:
         px = (coords[0] - self.x_center) * self.tile_size + self.width / 2
         py = (coords[1] - self.y_center) * self.tile_size + self.height / 2
         return int(round(px)), int(round(py))
 
-    def _get_tile_url(self, x, y) -> str:
+    def _get_tile_url(self, pos: TileCoord) -> str:
         # x and y may have crossed the date line
         max_tile = 2 ** self.zoom
-        tile_x = (x + max_tile) % max_tile
-        tile_y = (y + max_tile) % max_tile
+        tile_x = (pos[0] + max_tile) % max_tile
+        tile_y = (pos[1] + max_tile) % max_tile
 
         if self.reverse_y:
             tile_y = ((1 << self.zoom) - tile_y) - 1
@@ -439,7 +427,7 @@ class StaticMap:
         y_max = int(ceil(self.y_center + (0.5 * self.height / self.tile_size)))
 
         # assemble all map tiles needed for the map
-        tiles = [(x, y, self._get_tile_url(x, y))
+        tiles = [(x, y, self._get_tile_url((x, y)))
                  for x in range(x_min, x_max) for y in range(y_min, y_max)]
 
         if self.cache_file is None:
@@ -480,8 +468,8 @@ class StaticMap:
                         continue
 
                     tile_image = Image.open(BytesIO(response_content)).convert("RGBA")
-                    box = [*self.tile_to_img((x, y)),
-                           *self.tile_to_img((x + 1, y + 1))]
+                    box = [*self._tile_to_img((x, y)),
+                           *self._tile_to_img((x + 1, y + 1))]
                     image.paste(tile_image, box, tile_image)
 
                 # put failed back into list of tiles to fetch in next try
@@ -491,16 +479,12 @@ class StaticMap:
             raise RuntimeError("could not download {} tiles: {}".format(len(tiles), tiles))
 
     def _draw_features(self, canvas: Image.Image):
-
         # Pillow does not support anti aliasing for lines and circles
         # There is a trick to draw them on an image that is twice the size and resize it at the end
         # before it gets merged with  the base layer
 
-        def coord_to_px(lon, lat) -> Tuple[float, float]:
-            return self.tile_to_img(self.geo_to_tile((lon, lat)))
-
-        def aa_coord_to_px(lon, lat) -> Tuple[float, float]:
-            x, y = coord_to_px(lon, lat)
+        def aa_coord_to_px(pos: LonLat) -> PixCoord:
+            x, y = self._tile_to_img(self._geo_to_tile(pos))
             return x * 2, y * 2
 
         aa_image = Image.new('RGBA', (self.width * 2, self.height * 2), (255, 0, 0, 0))
@@ -514,7 +498,7 @@ class StaticMap:
         canvas.paste(aa_image, (0, 0), aa_image)
 
         for shape in filter(lambda s: isinstance(s, DirectShape), self.shapes):
-            shape.draw(canvas, coord_to_px)
+            shape.draw(canvas, lambda pos: self._tile_to_img(self._geo_to_tile(pos)))
 
 
 if __name__ == '__main__':
