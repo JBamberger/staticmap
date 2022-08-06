@@ -3,6 +3,7 @@
 A small, python-based library for creating map images with lines and markers.
 
 ## Example
+
 ```python
 from staticmap import *
 
@@ -11,19 +12,29 @@ m.add_line(Line(((13.4, 52.5), (2.3, 48.9)), 'blue', 3))
 image = m.render()
 image.save('map.png')
 ```
+
 This will create a 300px x 400px map with a blue line drawn from Berlin to Paris.
 
 ![Map with Line from Berlin to Paris](/samples/berlin_paris.png?raw=true)
 
-
 ## Installation
-StaticMap is a small library, all it takes is python and two python packages: [Pillow](https://python-pillow.github.io/) and [request](http://www.python-requests.org/). Install staticmap via:
+
+StaticMap is a small library, all it takes is python and two python
+packages: [Pillow](https://python-pillow.github.io/) and [request](http://www.python-requests.org/).
+Install staticmap via:
 
 ```bash
 pip install staticmap
 ```
 
+To enable map tile caching, install the `requests-cache` package:
+
+```bash
+pip install requests-cache
+```
+
 ## Usage
+
 #### Create a new map instance:
 
 ```python
@@ -81,7 +92,9 @@ outline_color | a color definition Pillow <a href="http://pillow.readthedocs.org
 simplify      | whether to simplify coordinates, looks less shaky, default is true
 
 ## Samples
+
 #### Show Position on Map
+
 ```python
 from staticmap import StaticMap, CircleMarker
 
@@ -100,6 +113,7 @@ image.save('marker.png')
 ![Position IconMarker on a Map](/samples/marker.png?raw=true)
 
 #### Show Ferry Connection
+
 ```python
 from staticmap import StaticMap, Line
 
@@ -119,6 +133,7 @@ image.save('ferry.png')
 ![Ferry Connection Shown on a Map](/samples/ferry.png?raw=true)
 
 #### Show Icon Marker
+
 ```python
 from staticmap import StaticMap, IconMarker
 
@@ -134,6 +149,8 @@ image.save('icons.png')
 ![Ferry Connection Shown on a Map](/samples/icons.png?raw=true)
 
 ### Licence
+
 StaticMap is open source and licensed under Apache License, Version 2.0
 
-The map samples on this page are made with [OSM](http://www.osm.org) data, © [OpenStreetMap](http://www.openstreetmap.org/copyright) contributors
+The map samples on this page are made with [OSM](http://www.osm.org) data,
+© [OpenStreetMap](http://www.openstreetmap.org/copyright) contributors

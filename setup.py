@@ -14,6 +14,6 @@ setup(
     install_requires=[
         'Pillow',
         'requests',
-        'futures;python_version<"3.2"'
+        'futures;python_version<"3.2"',
     ]
 )

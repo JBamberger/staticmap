@@ -9,7 +9,6 @@ from typing import Tuple, Callable, Union, Optional, Dict, List
 from PIL import Image, ImageDraw
 from PIL.Image import Resampling
 from requests import RequestException, Session
-from requests_cache import CachedSession
 
 LonLat = Tuple[float, float]
 TileCoord = Tuple[float, float]
@@ -243,9 +242,9 @@ class StaticMap:
                  reverse_y: bool = False,
                  background_color: str = "#fff",
                  delay_between_retries: int = 0,
-                 concurrent_connections: int = 2,
+                 concurrent_connections: int = 4,
                  max_retries: int = 3,
-                 cache_file: Optional[str] = 'tile_cache'):
+                 cache_file: Optional[str] = None):
         """
         :param width: map width in pixel
         :param height:  map height in pixel
@@ -274,7 +273,17 @@ class StaticMap:
         self.concurrent_connections = concurrent_connections
         self.delay_between_retries = delay_between_retries
         self.max_retries = max_retries
-        self.cache_file = cache_file
+
+        if cache_file is not None:
+            try:
+                from requests_cache import CachedSession
+                self._make_session = lambda: CachedSession(
+                    cache_name=cache_file, cache_control=True)
+            except ImportError:
+                raise AssertionError('To use tile caching, install requests-cache by calling:\n'
+                                     '>>> pip install requests-cache')
+        else:
+            self._make_session = lambda: Session()
 
         # Added map geometries and features
         self.shapes = []
@@ -480,12 +489,7 @@ class StaticMap:
         tiles = [(x, y, self._get_tile_url((x, y)))
                  for x in range(x_min, x_max) for y in range(y_min, y_max)]
 
-        if self.cache_file is None:
-            session = Session()
-        else:
-            session = CachedSession(cache_name=self.cache_file, cache_control=True)
-
-        with session:
+        with self._make_session() as session:
             def download_tile(url):
                 res = session.get(url, timeout=self.request_timeout, headers=self.headers)
                 return res.status_code, res.content
